@@ -1,1 +1,2 @@
-python main.py -a resnet50 --lr 0.01 -b 512
+# test
+python main.py -a resnet18 --lr 0.001 -b 64 --epochs 10

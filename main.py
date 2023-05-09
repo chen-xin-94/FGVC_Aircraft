@@ -23,6 +23,9 @@ from torch.utils.data import Subset
 
 import socket
 
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
@@ -91,6 +94,7 @@ best_acc1 = 0
 
 
 def main():
+    global writer
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -117,6 +121,7 @@ def main():
         ngpus_per_node = torch.cuda.device_count()
     else:
         ngpus_per_node = 1
+
     if args.multiprocessing_distributed:
         # Since we have ngpus_per_node processes per node, the total world_size
         # needs to be adjusted accordingly
@@ -127,7 +132,8 @@ def main():
     else:
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
-
+    
+    writer.close()
 
 def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
@@ -288,10 +294,18 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, device, args)
+        loss, top1, top5 = train(train_loader, model, criterion, optimizer, epoch, device, args)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args)
+        loss_val, acc1, acc5 = validate(val_loader, model, criterion, args)
+
+        # tensorboard
+        writer.add_scalar('Loss/train', loss, epoch)
+        writer.add_scalar('Loss/val', loss_val, epoch)
+        writer.add_scalar('top1/train', top1, epoch)
+        writer.add_scalar('top1/val', acc1, epoch)
+        writer.add_scalar('top5/train', top5, epoch)
+        writer.add_scalar('top5/val', acc5, epoch)
         
         scheduler.step()
         
@@ -355,6 +369,8 @@ def train(train_loader, model, criterion, optimizer, epoch, device, args):
 
         if i % args.print_freq == 0:
             progress.display(i + 1)
+        
+    return losses.avg, top1.avg, top5.avg
 
 
 def validate(val_loader, model, criterion, args):
@@ -416,7 +432,7 @@ def validate(val_loader, model, criterion, args):
 
     progress.display_summary()
 
-    return top1.avg
+    return losses.avg, top1.avg, top5.avg
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
