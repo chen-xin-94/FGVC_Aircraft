@@ -21,11 +21,18 @@ import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import Subset
 
+import socket
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+# default dataset path
 DATASET_PATH = "/mnt/Win/Users/Xin/Datasets/FGVC_Aircraft"
+# dataset path for specific machine
+hostname = socket.gethostname()
+if hostname == "BALI":
+    DATASET_PATH = "data"
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR', nargs='?', default='imagenet',

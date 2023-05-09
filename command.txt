@@ -1,0 +1,1 @@
+python main.py -a resnet50 --lr 0.01 -b 512
