@@ -24,7 +24,6 @@ from torch.utils.data import Subset
 import socket
 
 from torch.utils.tensorboard import SummaryWriter
-writer = SummaryWriter()
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -51,9 +50,9 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=256, type=int,
+parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='N',
-                    help='mini-batch size (default: 256), this is the total '
+                    help='mini-batch size (default: 64), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
@@ -75,7 +74,7 @@ parser.add_argument('--world-size', default=-1, type=int,
                     help='number of nodes for distributed training')
 parser.add_argument('--rank', default=-1, type=int,
                     help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://224.66.41.62:23456', type=str,
+parser.add_argument('--dist-url', default='tcp://127.0.0.1:23456', type=str,
                     help='url used to set up distributed training')
 parser.add_argument('--dist-backend', default='nccl', type=str,
                     help='distributed backend')
@@ -89,13 +88,16 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
 parser.add_argument('--dummy', action='store_true', help="use fake data to benchmark")
+parser.add_argument('--step-lr', default=30, type=int, metavar='N',help="Sets the learning rate to the initial LR decayed by 10 every step_lr epochs")
+parser.add_argument('--save-dir', default='output', type=str, help="Directory to save the model")
+parser.add_argument('--tensorboard-dir', default='runs', type=str, help="Directory to save the tensorboard log")
 
 best_acc1 = 0
 
 
 def main():
-    global writer
     args = parser.parse_args()
+    print(args)
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -132,8 +134,6 @@ def main():
     else:
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
-    
-    writer.close()
 
 def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
@@ -210,8 +210,8 @@ def main_worker(gpu, ngpus_per_node, args):
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
     
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+    """Sets the learning rate to the initial LR decayed by 10 every args.step-lr epochs"""
+    scheduler = StepLR(optimizer, step_size=args.step_lr, gamma=0.1)
     
     # optionally resume from a checkpoint
     if args.resume:
@@ -289,6 +289,33 @@ def main_worker(gpu, ngpus_per_node, args):
         validate(val_loader, model, criterion, args)
         return
 
+    run_name = str(args.arch) + "_lr-" + str(args.lr) + "_m-" + str(args.momentum) + "_wd-" + str(args.weight_decay) + \
+                "_batch-" + str(args.batch_size) + "_epoch-" + str(args.epochs)
+    run_name += "_from-scratch" if not args.pretrained else ""
+    log_dir = os.path.dirname(os.path.realpath(__file__)) + os.sep + args.tensorboard_dir 
+    os.makedirs(log_dir, exist_ok=True)
+    run_dir = log_dir + os.sep + run_name
+    
+    save_dir = os.path.dirname(os.path.realpath(__file__)) + os.sep + args.save_dir
+    os.makedirs(save_dir, exist_ok=True)
+    filepath= save_dir + os.sep +run_name+'_last.pth.tar'
+
+    writer = SummaryWriter(run_dir) # not sure if this works correctly with DDP
+
+    ## add hyperparameters to tensorboar
+
+    # writer.add_hparams({"model": args.arch,
+    #                     "lr": args.lr, 
+    #                     "momentum": args.momentum,
+    #                     "weight_decay": args.weight_decay,
+    #                     "bs":args.batch_size,
+    #                     "epochs": args.epochs,
+    #                     "pretrained": args.pretrained,
+    #                     "step_lr": args.step_lr,
+    #                     },
+    #                     {'hparam/acc1_best': best_acc1},
+    #                     ) # this will create a subfolder which is not clean, https://github.com/pytorch/pytorch/issues/32651#issuecomment-1219273881
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -298,15 +325,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # evaluate on validation set
         loss_val, acc1, acc5 = validate(val_loader, model, criterion, args)
-
-        # tensorboard
-        writer.add_scalar('Loss/train', loss, epoch)
-        writer.add_scalar('Loss/val', loss_val, epoch)
-        writer.add_scalar('top1/train', top1, epoch)
-        writer.add_scalar('top1/val', acc1, epoch)
-        writer.add_scalar('top5/train', top5, epoch)
-        writer.add_scalar('top5/val', acc5, epoch)
-        
+      
         scheduler.step()
         
         # remember best acc@1 and save checkpoint
@@ -322,7 +341,19 @@ def main_worker(gpu, ngpus_per_node, args):
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
                 'scheduler' : scheduler.state_dict()
-            }, is_best)
+            }, is_best,
+            filepath
+            )
+
+            # add loss and accuracy to tensorboard
+            writer.add_scalar('Loss/train', loss, epoch)
+            writer.add_scalar('Loss/val', loss_val, epoch)
+            writer.add_scalar('acc1/train', top1, epoch)
+            writer.add_scalar('acc1/val', acc1, epoch)
+            writer.add_scalar('acc5/train', top5, epoch)
+            writer.add_scalar('acc5/val', acc5, epoch)
+
+    writer.close()
 
 
 def train(train_loader, model, criterion, optimizer, epoch, device, args):
@@ -435,10 +466,10 @@ def validate(val_loader, model, criterion, args):
     return losses.avg, top1.avg, top5.avg
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, filepath='checkpoint.pth.tar'):
+    torch.save(state, filepath)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filepath, filepath.replace('_last.pth.tar', '_best.pth.tar'))
 
 class Summary(Enum):
     NONE = 0
